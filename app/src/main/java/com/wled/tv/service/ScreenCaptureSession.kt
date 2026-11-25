@@ -34,6 +34,7 @@ class ScreenCaptureSession(
     private var imageReader: ImageReader? = null
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
+    private var lastCaptureTimestamp = 0L
 
     private val _isCapturing = AtomicBoolean(false)
     val isCapturing: Boolean
@@ -147,6 +148,17 @@ class ScreenCaptureSession(
                     }
                     return@setOnImageAvailableListener
                 }
+
+                // --- ОТСЕЧКА КАДРОВ ПО FPS ---
+                val currentFps = engineProvider()?.config?.capture?.fps?.coerceAtLeast(1) ?: 3
+                val frameIntervalMs = 1000L / currentFps
+                val now = System.currentTimeMillis()
+
+                if (now - lastCaptureTimestamp < frameIntervalMs) {
+                    return@setOnImageAvailableListener // Пропускаем кадр, image.close() вызовется в finally
+                }
+                lastCaptureTimestamp = now
+                // -----------------------------
 
                 val planes = image.planes
                 if (planes.isNotEmpty()) {
