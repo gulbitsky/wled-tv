@@ -47,31 +47,62 @@ class ScreenCaptureSession(
         private set
 
     private val streamingTickerRunnable = object : Runnable {
-        override fun run() {
-            if (!_isCapturing.get()) return
+    override fun run() {
+        if (!_isCapturing.get()) return
 
-            if (!isScreenActive()) {
-                onScreenStandbyDetected()
-                backgroundHandler?.postDelayed(this, 1000L)
-                return
-            }
-
-            val currentEngine = engineProvider()
-            if (currentEngine == null) {
-                backgroundHandler?.postDelayed(this, 16L)
-                return
-            }
-
-            val delayMs = currentEngine.tickStreaming()
-            try {
-                onTick?.invoke(currentEngine)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in onTick callback", e)
-            }
-
-            backgroundHandler?.postDelayed(this, delayMs)
+        if (!isScreenActive()) {
+            onScreenStandbyDetected()
+            backgroundHandler?.postDelayed(this, 1000L)
+            return
         }
+
+        val currentEngine = engineProvider()
+        if (currentEngine == null) {
+            backgroundHandler?.postDelayed(this, 16L)
+            return
+        }
+
+        // --- ЗАБОР 1 КАДРА СТРОГО ПО ТАЙМЕРУ ---
+        val reader = imageReader
+        if (reader != null) {
+            val image = reader.acquireLatestImage()
+            if (image != null) {
+                try {
+                    val planes = image.planes
+                    if (planes.isNotEmpty()) {
+                        val plane = planes[0]
+                        val buffer = plane.buffer
+                        if (buffer != null) {
+                            currentEngine.onFrameAvailable(
+                                buffer = buffer,
+                                width = image.width,
+                                height = image.height,
+                                rowStride = plane.rowStride,
+                                pixelStride = plane.pixelStride
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error acquiring timed frame", e)
+                } finally {
+                    // Закрытие кадра освобождает 1 буфер. 
+                    // Только после этого VirtualDisplay сделает следующий 1 кадр для следующего тика.
+                    image.close()
+                }
+            }
+        }
+        // ---------------------------------------
+
+        val delayMs = currentEngine.tickStreaming()
+        try {
+            onTick?.invoke(currentEngine)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onTick callback", e)
+        }
+
+        backgroundHandler?.postDelayed(this, delayMs)
     }
+ }
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
