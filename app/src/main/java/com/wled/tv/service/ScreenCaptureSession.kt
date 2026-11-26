@@ -9,7 +9,6 @@ import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
-import com.wled.tv.engine.AmbientEngine
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ScreenCaptureSession(
@@ -45,7 +44,7 @@ class ScreenCaptureSession(
 
             // 1. Считываем выбранный пользователем FPS (от 1 до 5) и считаем задержку
             val userFps = currentEngine.settings.fps.coerceIn(1, 5)
-            val frameIntervalMs = 1000L / userFps
+            val frameIntervalMs = 1000L / userFps.toLong()
 
             // 2. Запрашиваем 1 кадр строго по таймеру
             val reader = imageReader
