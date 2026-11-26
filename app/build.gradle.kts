@@ -48,6 +48,13 @@ android {
             }
         }
     }
+    
+    signingConfigs {
+        getByName("debug") {
+            v1SigningEnabled = true
+            v2SigningEnabled = true
+        }
+    }
 
     buildTypes {
         release {
