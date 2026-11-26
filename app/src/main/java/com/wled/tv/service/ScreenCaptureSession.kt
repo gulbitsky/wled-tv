@@ -139,49 +139,10 @@ class ScreenCaptureSession(
     }
 
     private fun setupImageAvailableListener(reader: ImageReader, handler: Handler) {
-        reader.setOnImageAvailableListener({ r ->
-            val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                if (!_isCapturing.get() || !isScreenActive()) {
-                    if (!isScreenActive()) {
-                        onScreenStandbyDetected()
-                    }
-                    return@setOnImageAvailableListener
-                }
-
-                // --- ОТСЕЧКА КАДРОВ ПО FPS ---
-                val currentFps = engineProvider()?.config?.capture?.fps?.coerceAtLeast(1) ?: 3
-                val frameIntervalMs = 1000L / currentFps
-                val now = System.currentTimeMillis()
-
-                if (now - lastCaptureTimestamp < frameIntervalMs) {
-                    return@setOnImageAvailableListener // Пропускаем кадр, image.close() вызовется в finally
-                }
-                lastCaptureTimestamp = now
-                // -----------------------------
-
-                val planes = image.planes
-                if (planes.isNotEmpty()) {
-                    val plane = planes[0]
-                    val buffer = plane.buffer
-                    if (buffer != null) {
-                        engineProvider()?.onFrameAvailable(
-                            buffer = buffer,
-                            width = image.width,
-                            height = image.height,
-                            rowStride = plane.rowStride,
-                            pixelStride = plane.pixelStride
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error acquiring frame colors", e)
-            } finally {
-                image.close()
-            }
-        }, handler)
+        // Оставляем пустым! Не вешаем слушатель 60 FPS, 
+        // чтобы VirtualDisplay спал и не копировал кадры вхолостую.
+        reader.setOnImageAvailableListener(null, null)
     }
-
     /**
      * Dynamically updates the capture resolution by creating a new [ImageReader]
      * and resizing the active [VirtualDisplay].
