@@ -169,9 +169,9 @@ class ScreenCaptureSession(
                 captureHeight,
                 metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface,
                 null,
                 null,
+                handler
             )
 
             _isCapturing.set(true)
