@@ -220,9 +220,11 @@ adb shell appops set com.wled.tv PROJECT_MEDIA default
         lifecycleScope.launch {
             config = configRepo.updateCaptureSettings { cap ->
                 val nextFps = when (cap.fps) {
-                    15 -> 30
-                    30 -> 60
-                    else -> 15
+                    1 -> 2
+                    2 -> 3
+                    3 -> 4
+                    4 -> 5
+                    else -> 1
                 }
                 cap.copy(fps = nextFps)
             }
