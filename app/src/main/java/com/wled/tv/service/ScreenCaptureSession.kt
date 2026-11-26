@@ -120,7 +120,6 @@ class ScreenCaptureSession(
             backgroundHandler?.postDelayed(this, delayMs)
         }
     }
-}
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
