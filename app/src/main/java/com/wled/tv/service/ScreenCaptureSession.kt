@@ -47,79 +47,65 @@ class ScreenCaptureSession(
         private set
 
     private val streamingTickerRunnable = object : Runnable {
-        override fun run() {
-            if (!_isCapturing.get()) return
+    override fun run() {
+        if (!_isCapturing.get()) return
 
-            if (!isScreenActive()) {
-                onScreenStandbyDetected()
-                backgroundHandler?.postDelayed(this, 1000L)
-                return
+        if (!isScreenActive()) {
+            onScreenStandbyDetected()
+            backgroundHandler?.postDelayed(this, 1000L)
+            return
+        }
+
+        val currentEngine = engineProvider()
+        if (currentEngine == null) {
+            backgroundHandler?.postDelayed(this, 100L)
+            return
+        }
+
+        val reader = imageReader
+        if (reader != null) {
+            val image = try {
+                reader.acquireLatestImage()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error acquiring image", e)
+                null
             }
 
-            val currentEngine = engineProvider()
-            if (currentEngine == null) {
-                backgroundHandler?.postDelayed(this, 100L)
-                return
-            }
-
-            val reader = imageReader
-            val display = virtualDisplay
-
-            if (reader != null && display != null) {
+            if (image != null) {
                 try {
-                    // 1. Подключаем приемник кадров на мгновение (импульс)
-                    display.setSurface(reader.surface)
-
-                    // Микро-пауза 15 мс, чтобы Android TV успел положить 1 кадр в буфер
-                    Thread.sleep(15L)
-
-                    val image = try {
-                        reader.acquireLatestImage()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error acquiring timed frame", e)
-                        null
-                    }
-
-                    if (image != null) {
-                        try {
-                            val planes = image.planes
-                            if (planes.isNotEmpty()) {
-                                val plane = planes[0]
-                                val buffer = plane.buffer
-                                if (buffer != null) {
-                                    currentEngine.onFrameAvailable(
-                                        buffer = buffer,
-                                        width = image.width,
-                                        height = image.height,
-                                        rowStride = plane.rowStride,
-                                        pixelStride = plane.pixelStride
-                                    )
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error processing frame", e)
-                        } finally {
-                            image.close()
+                    val planes = image.planes
+                    if (planes.isNotEmpty()) {
+                        val plane = planes[0]
+                        val buffer = plane.buffer
+                        if (buffer != null) {
+                            currentEngine.onFrameAvailable(
+                                buffer = buffer,
+                                width = image.width,
+                                height = image.height,
+                                rowStride = plane.rowStride,
+                                pixelStride = plane.pixelStride
+                            )
                         }
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing frame", e)
                 } finally {
-                    // 2. СРАЗУ МГНОВЕННО ОТКЛЮЧАЕМ SURFACE! 
-                    // Android TV перестает рендерить и копировать 4K видео в фоновом режиме
-                    display.setSurface(null)
+                    image.close()
                 }
             }
-
-            val delayMs = currentEngine.tickStreaming()
-
-            try {
-                onTick?.invoke(currentEngine)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in onTick callback", e)
-            }
-
-            backgroundHandler?.postDelayed(this, delayMs)
         }
+
+        val delayMs = currentEngine.tickStreaming()
+
+        try {
+            onTick?.invoke(currentEngine)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onTick callback", e)
+        }
+
+        backgroundHandler?.postDelayed(this, delayMs)
     }
+}
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -169,7 +155,7 @@ class ScreenCaptureSession(
                 captureHeight,
                 metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                null,
+                reader.surface,
                 null,
                 handler
             )
