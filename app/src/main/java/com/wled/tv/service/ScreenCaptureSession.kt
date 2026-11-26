@@ -58,11 +58,15 @@ class ScreenCaptureSession(
 
         val currentEngine = engineProvider()
         if (currentEngine == null) {
-            backgroundHandler?.postDelayed(this, 16L)
+            backgroundHandler?.postDelayed(this, 100L)
             return
         }
 
-        // --- ЗАБОР 1 КАДРА СТРОГО ПО ТАЙМЕРУ ---
+        // 1. Получаем выбранный пользователем FPS (от 1 до 5) и считаем интервал
+        val userFps = currentEngine.settings.fps.coerceIn(1, 5)
+        val frameIntervalMs = 1000L / userFps
+
+        // 2. Запрашиваем ровно 1 кадр по истечению таймера
         val reader = imageReader
         if (reader != null) {
             val image = reader.acquireLatestImage()
@@ -85,12 +89,25 @@ class ScreenCaptureSession(
                 } catch (e: Exception) {
                     Log.e(TAG, "Error acquiring timed frame", e)
                 } finally {
-                    // Закрытие кадра освобождает 1 буфер. 
-                    // Только после этого VirtualDisplay сделает следующий 1 кадр для следующего тика.
+                    // Освобождаем буфер: только после этого VirtualDisplay сделает следующий кадр
                     image.close()
                 }
             }
         }
+
+        // 3. Отправляем данные на WLED и планируем следующий тик
+        currentEngine.tickStreaming()
+
+        try {
+            onTick?.invoke(currentEngine)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onTick callback", e)
+        }
+
+        // Задержка таймера строго в соответствии с выбранным FPS
+        backgroundHandler?.postDelayed(this, frameIntervalMs)
+    }
+}
         // ---------------------------------------
 
         val delayMs = currentEngine.tickStreaming()
