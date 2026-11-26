@@ -172,7 +172,6 @@ class ScreenCaptureSession(
                 reader.surface,
                 null,
                 null,
-                handler
             )
 
             _isCapturing.set(true)
