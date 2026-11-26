@@ -62,14 +62,16 @@ class ScreenCaptureSession(
             return
         }
 
-        // 1. Получаем выбранный пользователем FPS (от 1 до 5) и считаем интервал
-        val userFps = currentEngine.settings.fps.coerceIn(1, 5)
-        val frameIntervalMs = 1000L / userFps.toLong()
-
-        // 2. Запрашиваем ровно 1 кадр по истечению таймера
+        // 1. Извлекаем 1 кадр строго по вызову таймера
         val reader = imageReader
         if (reader != null) {
-            val image = reader.acquireLatestImage()
+            val image = try {
+                reader.acquireLatestImage()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error acquiring timed frame", e)
+                null
+            }
+
             if (image != null) {
                 try {
                     val planes = image.planes
@@ -87,16 +89,15 @@ class ScreenCaptureSession(
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error acquiring timed frame", e)
+                    Log.e(TAG, "Error processing frame", e)
                 } finally {
-                    // Освобождаем буфер: только после этого VirtualDisplay сделает следующий кадр
                     image.close()
                 }
             }
         }
 
-        // 3. Отправляем данные на WLED и планируем следующий тик
-        currentEngine.tickStreaming()
+        // 2. Отправляем кадр на WLED — tickStreaming() возвращает задержку в мс (на основе FPS в меню)
+        val delayMs = currentEngine.tickStreaming()
 
         try {
             onTick?.invoke(currentEngine)
@@ -104,8 +105,8 @@ class ScreenCaptureSession(
             Log.e(TAG, "Error in onTick callback", e)
         }
 
-        // Задержка таймера строго в соответствии с выбранным FPS
-        backgroundHandler?.postDelayed(this, frameIntervalMs)
+        // 3. Передаём расчитанную задержку в таймер
+        backgroundHandler?.postDelayed(this, delayMs)
     }
 }
 
