@@ -370,7 +370,7 @@ class AmbientStreamingEngine(
      * Returns the recommended delay in milliseconds until the next tick.
      */
     fun tickStreaming(nowMs: Long = clock.currentTimeMillis()): Long {
-        val targetFps = config.capture.fps.coerceIn(15, 60)
+        val targetFps = config.capture.fps.coerceIn(1, 30)
         val tickIntervalMs = (1000L / targetFps).coerceAtLeast(10L)
         val startUptime = clock.uptimeMillis()
 
