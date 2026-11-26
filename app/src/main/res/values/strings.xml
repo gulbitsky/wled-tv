@@ -32,7 +32,7 @@
     <string name="pref_start_corner">Start Corner</string>
     <string name="pref_direction">Strip Direction</string>
     <string name="pref_fps">Capture Frame Rate</string>
-    <string name="pref_fps_desc">1-7 FPS (visout lugs) • 15 FPS • 30 FPS</string>
+    <string name="pref_fps_desc">1-5 FPS (No Lag) • 15 FPS • 30 FPS</string>
     <string name="pref_resolution">Capture Resolution</string>
     <string name="pref_resolution_desc">80x45 (Ultra) • 160x90 (Eco) • 320x180 (Standard) • 480x270 (High)</string>
     <string name="pref_auto_start">Auto-start on TV Boot</string>
