@@ -8,177 +8,282 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.DisplayMetrics
 import android.util.Log
+import android.view.WindowManager
+import com.wled.tv.engine.AmbientStreamingEngine
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Manages the low-level Android screen capture pipeline:
+ * [MediaProjection], [VirtualDisplay], [ImageReader], background capture thread,
+ * and the frame capture / streaming cadence ticker loop.
+ */
 class ScreenCaptureSession(
     private val context: Context,
-    private val engineProvider: () -> AmbientEngine?,
-    private val onTick: ((AmbientEngine) -> Unit)? = null
+    private val mediaProjection: MediaProjection,
+    private val engineProvider: () -> AmbientStreamingEngine?,
+    private val isScreenActive: () -> Boolean = { true },
+    private val onScreenStandbyDetected: () -> Unit = {},
+    private val onStopCallback: () -> Unit = {},
+    var onTick: ((AmbientStreamingEngine) -> Unit)? = null,
+    initialWidth: Int = 320,
+    initialHeight: Int = 180
 ) {
-    private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
+    private var lastCaptureTimestamp = 0L
 
     private val _isCapturing = AtomicBoolean(false)
-    val isCapturing: Boolean get() = _isCapturing.get()
+    val isCapturing: Boolean
+        get() = _isCapturing.get()
+
+    var captureWidth: Int = initialWidth
+        private set
+
+    var captureHeight: Int = initialHeight
+        private set
 
     private val streamingTickerRunnable = object : Runnable {
-        override fun run() {
-            if (!_isCapturing.get()) return
-
-            if (!isScreenActive()) {
-                onScreenStandbyDetected()
-                backgroundHandler?.postDelayed(this, 1000L)
-                return
-            }
-
-            val currentEngine = engineProvider()
-            if (currentEngine == null) {
-                backgroundHandler?.postDelayed(this, 100L)
-                return
-            }
-
-            // 1. Считываем выбранный пользователем FPS (от 1 до 5) и считаем задержку
-            val userFps = currentEngine.settings.fps.coerceIn(1, 5)
-            val frameIntervalMs = 1000L / userFps.toLong()
-
-            // 2. Запрашиваем 1 кадр строго по таймеру
-            val reader = imageReader
-            if (reader != null) {
-                val image = try {
-                    reader.acquireLatestImage()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error acquiring image", e)
-                    null
-                }
-
-                if (image != null) {
-                    try {
-                        val planes = image.planes
-                        if (planes.isNotEmpty()) {
-                            val plane = planes[0]
-                            val buffer = plane.buffer
-                            if (buffer != null) {
-                                currentEngine.onFrameAvailable(
-                                    buffer = buffer,
-                                    width = image.width,
-                                    height = image.height,
-                                    rowStride = plane.rowStride,
-                                    pixelStride = plane.pixelStride
-                                )
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error processing timed frame", e)
-                    } finally {
-                        image.close()
-                    }
-                }
-            }
-
-            // 3. Отправляем цвет на WLED
-            currentEngine.tickStreaming()
-
-            try {
-                onTick?.invoke(currentEngine)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in onTick callback", e)
-            }
-
-            // Задержка между кадрами (1 FPS = 1000ms, 3 FPS = 333ms, 5 FPS = 200ms)
-            backgroundHandler?.postDelayed(this, frameIntervalMs)
-        }
-    }
-
-    fun startCapture(projection: MediaProjection, width: Int, height: Int, densityDpi: Int) {
-        if (_isCapturing.get()) return
-
-        mediaProjection = projection
-        startBackgroundThread()
-
-        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        imageReader = reader
-
-        setupImageAvailableListener(reader, backgroundHandler!!)
-
-        virtualDisplay = projection.createVirtualDisplay(
-            "WLED-TV-Capture",
-            width,
-            height,
-            densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            null,
-            backgroundHandler
-        )
-
-        _isCapturing.set(true)
-        backgroundHandler?.post(streamingTickerRunnable)
-        Log.i(TAG, "Screen capture started ($width x $height)")
-    }
-
-    fun stopCapture() {
+    override fun run() {
         if (!_isCapturing.get()) return
 
-        _isCapturing.set(false)
-        backgroundHandler?.removeCallbacks(streamingTickerRunnable)
+        if (!isScreenActive()) {
+            onScreenStandbyDetected()
+            backgroundHandler?.postDelayed(this, 1000L)
+            return
+        }
+
+        val currentEngine = engineProvider()
+        if (currentEngine == null) {
+            backgroundHandler?.postDelayed(this, 100L)
+            return
+        }
+
+        // 1. Получаем выбранный пользователем FPS (от 1 до 5) и считаем интервал
+        val userFps = currentEngine.settings.fps.coerceIn(1, 5)
+        val frameIntervalMs = 1000L / userFps.toLong()
+
+        // 2. Запрашиваем ровно 1 кадр по истечению таймера
+        val reader = imageReader
+        if (reader != null) {
+            val image = reader.acquireLatestImage()
+            if (image != null) {
+                try {
+                    val planes = image.planes
+                    if (planes.isNotEmpty()) {
+                        val plane = planes[0]
+                        val buffer = plane.buffer
+                        if (buffer != null) {
+                            currentEngine.onFrameAvailable(
+                                buffer = buffer,
+                                width = image.width,
+                                height = image.height,
+                                rowStride = plane.rowStride,
+                                pixelStride = plane.pixelStride
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error acquiring timed frame", e)
+                } finally {
+                    // Освобождаем буфер: только после этого VirtualDisplay сделает следующий кадр
+                    image.close()
+                }
+            }
+        }
+
+        // 3. Отправляем данные на WLED и планируем следующий тик
+        currentEngine.tickStreaming()
 
         try {
-            virtualDisplay?.release()
+            onTick?.invoke(currentEngine)
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing virtual display", e)
+            Log.e(TAG, "Error in onTick callback", e)
         }
-        virtualDisplay = null
+
+        // Задержка таймера строго в соответствии с выбранным FPS
+        backgroundHandler?.postDelayed(this, frameIntervalMs)
+    }
+}
+
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.w(TAG, "MediaProjection stopped by system")
+            onStopCallback()
+        }
+    }
+
+    /**
+     * Initializes the background capture thread, image reader, virtual display,
+     * and begins the streaming cadence loop.
+     */
+    fun start(width: Int = captureWidth, height: Int = captureHeight) {
+        if (_isCapturing.get()) return
+
+        captureWidth = width
+        captureHeight = height
 
         try {
-            imageReader?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing image reader", e)
-        }
-        imageReader = null
+            mediaProjection.registerCallback(projectionCallback, null)
 
-        try {
-            mediaProjection?.stop()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping media projection", e)
-        }
-        mediaProjection = null
+            val thread = HandlerThread(
+                "WledCaptureThread",
+                android.os.Process.THREAD_PRIORITY_BACKGROUND
+            ).apply { start() }
+            backgroundThread = thread
+            val handler = Handler(thread.looper)
+            backgroundHandler = handler
 
-        stopBackgroundThread()
-        Log.i(TAG, "Screen capture stopped")
+            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+
+            val reader = ImageReader.newInstance(
+                captureWidth,
+                captureHeight,
+                PixelFormat.RGBA_8888,
+                3
+            )
+            imageReader = reader
+            setupImageAvailableListener(reader, handler)
+
+            virtualDisplay = mediaProjection.createVirtualDisplay(
+                "WledAmbientDisplay",
+                captureWidth,
+                captureHeight,
+                metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                null,
+                handler
+            )
+
+            _isCapturing.set(true)
+            handler.removeCallbacks(streamingTickerRunnable)
+            handler.post(streamingTickerRunnable)
+
+            Log.i(TAG, "Screen capture session started (${captureWidth}x${captureHeight})")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start screen capture session", e)
+            release()
+            onStopCallback()
+        }
     }
 
     private fun setupImageAvailableListener(reader: ImageReader, handler: Handler) {
-        // Оставляем пустым: слушатель 60 FPS отключён
+        // Оставляем пустым! Не вешаем слушатель 60 FPS, 
+        // чтобы VirtualDisplay спал и не копировал кадры вхолостую.
         reader.setOnImageAvailableListener(null, null)
     }
+    /**
+     * Dynamically updates the capture resolution by creating a new [ImageReader]
+     * and resizing the active [VirtualDisplay].
+     */
+    fun reinitResolution(width: Int, height: Int) {
+        val handler = backgroundHandler ?: return
+        handler.post {
+            if (!_isCapturing.get()) return@post
+            try {
+                captureWidth = width
+                captureHeight = height
+                val oldReader = imageReader
 
-    private fun isScreenActive(): Boolean = true
+                val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                val metrics = DisplayMetrics()
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay.getRealMetrics(metrics)
 
-    private fun onScreenStandbyDetected() {
-        Log.d(TAG, "Screen standby detected")
-    }
+                val newReader = ImageReader.newInstance(
+                    width,
+                    height,
+                    PixelFormat.RGBA_8888,
+                    3
+                )
+                setupImageAvailableListener(newReader, handler)
+                imageReader = newReader
 
-    private fun startBackgroundThread() {
-        backgroundThread = HandlerThread("WledCaptureThread").apply {
-            start()
-            backgroundHandler = Handler(looper)
+                virtualDisplay?.resize(width, height, metrics.densityDpi)
+                virtualDisplay?.setSurface(newReader.surface)
+
+                oldReader?.close()
+                Log.i(TAG, "Capture resolution updated to ${width}x${height}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to reinit capture resolution", e)
+            }
         }
     }
 
-    private fun stopBackgroundThread() {
-        backgroundThread?.quitSafely()
+    /**
+     * Pauses the streaming ticker loop (e.g. when display is sleeping).
+     */
+    fun pauseStreaming() {
+        backgroundHandler?.removeCallbacks(streamingTickerRunnable)
+    }
+
+    /**
+     * Resumes the streaming ticker loop (e.g. when display wakes up).
+     */
+    fun resumeStreaming() {
+        if (_isCapturing.get()) {
+            backgroundHandler?.removeCallbacks(streamingTickerRunnable)
+            backgroundHandler?.post(streamingTickerRunnable)
+        }
+    }
+
+    /**
+     * Stops capture and removes queued ticker callbacks.
+     */
+    fun stop() {
+        if (!_isCapturing.getAndSet(false)) return
+
         try {
-            backgroundThread?.join()
-        } catch (e: InterruptedException) {
+            backgroundHandler?.removeCallbacks(streamingTickerRunnable)
+            backgroundHandler?.removeCallbacksAndMessages(null)
+        } catch (_: Exception) {}
+
+        try {
+            virtualDisplay?.release()
+            virtualDisplay = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing virtual display", e)
+        }
+
+        try {
+            imageReader?.close()
+            imageReader = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing ImageReader", e)
+        }
+    }
+
+    /**
+     * Shuts down the capture session, stopping the background thread
+     * and releasing the [MediaProjection].
+     */
+    fun release() {
+        stop()
+
+        try {
+            backgroundThread?.quitSafely()
+            backgroundThread = null
+            backgroundHandler = null
+        } catch (e: Exception) {
             Log.e(TAG, "Error stopping background thread", e)
         }
-        backgroundThread = null
-        backgroundHandler = null
+
+        try {
+            mediaProjection.unregisterCallback(projectionCallback)
+        } catch (_: Exception) {}
+
+        try {
+            mediaProjection.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping MediaProjection", e)
+        }
     }
 
     companion object {
